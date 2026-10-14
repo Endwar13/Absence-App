@@ -8,10 +8,15 @@ import { supabase, uploadFile, getSignedUrl, withRetry, STORAGE_BUCKETS } from '
  * - Get profile with related class and teacher data
  * - Update profile (admin only)
  * - Get student photo
+ * - Email-to-student account mapping verification
  * 
  * Enforces correctness properties:
  * - Property 4: Self-Owned Data Access (students only see their own profile)
  * - Property 8: Student Profile Completeness (validates required fields)
+ * 
+ * Email-to-Student Mapping:
+ * Every student email address maps to exactly ONE student profile.
+ * Login flow uses this relationship to auto-load student data.
  */
 
 export const profileService = {
@@ -267,6 +272,145 @@ export const profileService = {
     } catch (error) {
       console.error('Validate profile completeness error:', error);
       throw new Error(error.message || 'Gagal memvalidasi kelengkapan profil.');
+    }
+  },
+
+  /**
+   * Verify email-to-student account mapping
+   * 
+   * Ensures that a given email address is:
+   * 1. Registered in auth.users
+   * 2. Has exactly one associated student profile
+   * 3. Has complete profile data
+   * 
+   * Used after login to validate the email-to-student relationship before
+   * loading student data. This is critical for ensuring data consistency.
+   * 
+   * @param {string} email - Email address to verify
+   * @returns {Promise<{valid: boolean, profile: Object|null, error: string|null}>}
+   */
+  async verifyEmailStudentMapping(email) {
+    if (!email) {
+      throw new Error('Email diperlukan untuk verifikasi mapping.');
+    }
+
+    try {
+      // Call Postgres function to verify mapping
+      const { data, error } = await supabase.rpc('verify_email_student_mapping', {
+        p_email: email.toLowerCase().trim()
+      });
+
+      if (error) {
+        console.error('Email mapping verification error:', error);
+        return {
+          valid: false,
+          profile: null,
+          error: 'Gagal memverifikasi email ke profil siswa'
+        };
+      }
+
+      if (!data?.valid) {
+        return {
+          valid: false,
+          profile: null,
+          error: data?.error || 'Mapping email ke profil siswa tidak valid'
+        };
+      }
+
+      // Mapping is valid, get full profile
+      const profile = await this.getProfileWithRelations(data.user_id);
+
+      return {
+        valid: true,
+        profile,
+        error: null
+      };
+    } catch (error) {
+      console.error('Verify email student mapping error:', error);
+      return {
+        valid: false,
+        profile: null,
+        error: error.message || 'Gagal memverifikasi email'
+      };
+    }
+  },
+
+  /**
+   * Get student profile after login (auto-discovery via auth user)
+   * 
+   * Called after successful login to automatically fetch the student profile
+   * associated with the authenticated user. This ensures that:
+   * 1. Each login email maps to exactly one student
+   * 2. Student data is always fresh from database
+   * 3. Profile completeness is validated
+   * 
+   * @param {string} userId - Supabase Auth user ID from authenticated session
+   * @returns {Promise<{profile: Object, status: string}>}
+   *   - profile: Complete student profile with class info
+   *   - status: 'complete' | 'incomplete' | 'not_found'
+   */
+  async getStudentProfileAfterLogin(userId) {
+    if (!userId) {
+      throw new Error('User ID diperlukan untuk mengambil profil siswa setelah login.');
+    }
+
+    try {
+      // Get basic profile
+      const { data: profile, error: profileError } = await supabase
+        .from('profiles_siswa')
+        .select('*')
+        .eq('user_id', userId)
+        .single();
+
+      if (profileError) {
+        if (profileError.code === 'PGRST116') {
+          // No profile found
+          return {
+            profile: null,
+            status: 'not_found',
+            error: 'Profil siswa tidak ditemukan. Hubungi administrator sekolah.'
+          };
+        }
+        throw profileError;
+      }
+
+      // Validate profile completeness
+      const missingFields = [];
+      if (!profile.nama) missingFields.push('nama');
+      if (!profile.nisn) missingFields.push('nisn');
+      if (!profile.nis) missingFields.push('nis');
+      if (!profile.jenis_kelamin) missingFields.push('jenis_kelamin');
+      if (!profile.id_kelas) missingFields.push('id_kelas');
+
+      if (missingFields.length > 0) {
+        return {
+          profile,
+          status: 'incomplete',
+          error: `Profil siswa tidak lengkap. Field yang hilang: ${missingFields.join(', ')}`
+        };
+      }
+
+      // Get enriched profile with class info
+      try {
+        const enrichedProfile = await this.getProfileWithRelations(userId);
+        return {
+          profile: enrichedProfile,
+          status: 'complete',
+          error: null
+        };
+      } catch (enrichError) {
+        // Return basic profile if enrichment fails
+        console.warn('Failed to enrich profile with relations:', enrichError);
+        return {
+          profile,
+          status: 'complete',
+          error: null,
+          warning: 'Data kelas tidak dapat dimuat sepenuhnya'
+        };
+      }
+    } catch (error) {
+      console.error('Get student profile after login error:', error);
+      throw new Error(error.message || 'Gagal mengambil profil siswa setelah login.');
     }
   }
 };
