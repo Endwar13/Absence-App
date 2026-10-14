@@ -1,0 +1,9 @@
+{
+  "name": "Nexus Connect",
+  "description": "Aplikasi Presensi dan Layanan Izin Siswa Sekolah Menengah Kejuruan (Nexus Connect Siswa)",
+  "requestFramePermissions": [
+    "camera",
+    "geolocation"
+  ],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
