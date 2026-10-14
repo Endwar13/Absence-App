@@ -7,10 +7,10 @@ export const AuthContext = createContext(null);
  * AuthProvider Component
  * 
  * Manages authentication state using Supabase Auth:
- * - Email/password login
+ * - Google OAuth 2.0 via Supabase Authentication
+ * - Email-to-student profile mapping
  * - Session persistence
  * - JWT token management
- * - User profile data
  * 
  * Enforces security:
  * - Tokens stored in Supabase's secure session storage
@@ -28,7 +28,7 @@ export function AuthProvider({ children }) {
     // Check for existing session
     checkSession();
 
-    // Listen for auth state changes (login, logout, token refresh)
+    // Listen for auth state changes (login, logout, token refresh, OAuth redirect)
     const {
       data: { subscription }
     } = supabase.auth.onAuthStateChange((event, session) => {
@@ -72,7 +72,52 @@ export function AuthProvider({ children }) {
   };
 
   /**
-   * Login with email and password
+   * Login with Google OAuth via Supabase Authentication
+   * @param {string} [emailHint] - Optional email hint for Google account selection
+   * @returns {Promise<{success: boolean, error?: string}>}
+   */
+  const loginWithGoogle = async (emailHint = null) => {
+    setIsLoading(true);
+    setError(null);
+
+    try {
+      const options = {
+        redirectTo: window.location.origin
+      };
+
+      if (emailHint) {
+        options.queryParams = { login_hint: emailHint.trim() };
+        options.email = emailHint.trim();
+      }
+
+      const { data, error: authError } = await supabase.auth.signInWithOAuth({
+        provider: 'google',
+        options
+      });
+
+      if (authError) {
+        throw new Error(authError.message || 'Login dengan Google gagal');
+      }
+
+      // Check current session
+      const { data: sessionData } = await supabase.auth.getSession();
+      if (sessionData?.session?.user) {
+        setUser(sessionData.session.user);
+        setIsAuthenticated(true);
+      }
+
+      return { success: true, data };
+    } catch (err) {
+      const errorMessage = err.message || 'Gagal masuk dengan Google OAuth';
+      setError(errorMessage);
+      return { success: false, error: errorMessage };
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  /**
+   * Login with email and password (fallback)
    * @param {string} email - Student email
    * @param {string} password - Student password
    * @returns {Promise<{success: boolean, error?: string}>}
@@ -82,23 +127,16 @@ export function AuthProvider({ children }) {
     setError(null);
 
     try {
-      // Validate inputs
       if (!email || !password) {
         throw new Error('Email dan kata sandi wajib diisi');
       }
 
-      if (password.length < 6) {
-        throw new Error('Kata sandi minimal 6 karakter');
-      }
-
-      // Attempt login with Supabase Auth
       const { data, error: authError } = await supabase.auth.signInWithPassword({
         email: email.trim(),
         password
       });
 
       if (authError) {
-        // Handle specific auth errors
         if (authError.status === 400) {
           throw new Error('Email atau kata sandi tidak valid');
         } else if (authError.status === 429) {
@@ -237,6 +275,7 @@ export function AuthProvider({ children }) {
     isAuthenticated,
     isLoading,
     error,
+    loginWithGoogle,
     login,
     signup,
     logout,

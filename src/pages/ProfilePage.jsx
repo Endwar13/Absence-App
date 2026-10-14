@@ -242,11 +242,16 @@ export default function ProfilePage() {
           <div className="flex items-center justify-between py-2.5">
             <div className="flex items-center gap-2.5 text-slate-500">
               <span className="material-symbols-outlined text-[18px]">mail</span>
-              <span>Email Terdaftar</span>
+              <span>Email Google Terikat</span>
             </div>
-            <span className="font-bold text-[#0050cb] max-w-[190px] truncate text-right">
-              {student.email}
-            </span>
+            <div className="flex items-center gap-1.5 max-w-[210px] justify-end">
+              <span className="font-bold text-[#0050cb] truncate text-right">
+                {student.email}
+              </span>
+              <span className="text-[10px] bg-emerald-50 text-emerald-700 font-bold px-1.5 py-0.5 rounded border border-emerald-200 shrink-0">
+                Google OAuth
+              </span>
+            </div>
           </div>
 
           <div className="flex items-center justify-between py-2.5">

@@ -11,12 +11,12 @@ export const StudentContext = createContext(null);
  * StudentProvider
  * 
  * Manages student-related state and data loading:
- * - Student profile (name, NISN, NIS, class, etc.)
+ * - Student profile linked to authenticated Google email (name, NISN, NIS, class, etc.)
  * - Attendance records for current student
  * - Leave requests submitted by student
  * - Class schedule for student's class
  * 
- * Auto-loads profile after login to ensure email-to-student mapping is established.
+ * Auto-loads profile after Google OAuth login to ensure email-to-student mapping is established.
  * Validates profile completeness before allowing attendance operations.
  */
 export function StudentProvider({ children }) {
@@ -45,8 +45,12 @@ export function StudentProvider({ children }) {
       setError(null);
 
       // CRITICAL: Get student profile with email-to-student mapping validation
-      // This ensures the user's email is properly mapped to a student profile
-      const profileResult = await profileService.getStudentProfileAfterLogin(user.id);
+      // This ensures the user's Google OAuth email is properly mapped to a student profile
+      const profileResult = await profileService.getStudentProfileAfterLogin(
+        user.id,
+        user.email,
+        user.user_metadata
+      );
       
       if (profileResult.status === 'not_found') {
         setStudentProfile(null);
@@ -69,14 +73,35 @@ export function StudentProvider({ children }) {
       }
 
       // Profile is complete, load all data in parallel
-      setStudentProfile(profileResult.profile);
+      const prof = profileResult.profile;
+      setStudentProfile(prof);
       setProfileStatus('complete');
+
+      // Sync active student info to localStorage so legacy state stays in sync
+      try {
+        const existing = JSON.parse(localStorage.getItem('nxc_student_profile') || '{}');
+        const updated = {
+          ...existing,
+          id: prof.id,
+          nama: prof.nama,
+          email: prof.email || user.email,
+          nisn: prof.nisn,
+          nis: prof.nis,
+          jenisKelamin: prof.jenis_kelamin === 'L' ? 'Laki-laki (L)' : 'Perempuan (P)',
+          kelas: prof.kelas_detail?.nama_kelas || 'XII Rekayasa Perangkat Lunak 1',
+          kelasShort: 'XII RPL 1',
+          avatarUrl: prof.photo_url || user.user_metadata?.avatar_url || existing.avatarUrl
+        };
+        localStorage.setItem('nxc_student_profile', JSON.stringify(updated));
+      } catch (err) {
+        console.warn('Sync student storage error:', err);
+      }
 
       // Fetch related data
       const [attendanceData, leaveData, scheduleData] = await Promise.all([
-        attendanceService.getAttendanceHistory(profileResult.profile.id),
-        leaveRequestService.getLeaveRequests(profileResult.profile.id),
-        classService.getClassSchedule(profileResult.profile.id_kelas)
+        attendanceService.getAttendanceHistory(prof.id),
+        leaveRequestService.getLeaveRequests(prof.id),
+        classService.getClassSchedule(prof.id_kelas || 'class-001')
       ]);
 
       setAttendanceRecords(attendanceData.data || []);

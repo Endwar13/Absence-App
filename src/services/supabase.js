@@ -42,21 +42,40 @@ function createMockSupabaseClient() {
   const defaultUser = {
     id: 'auth-user-student-001',
     email: 'bayu.setiawan@siswa.nexus.sch.id',
+    app_metadata: { provider: 'google', providers: ['google'] },
     user_metadata: {
-      name: 'Bayu Setiawan'
+      name: 'Bayu Setiawan',
+      full_name: 'Bayu Setiawan',
+      avatar_url: STUDENT_PROFILE.avatarUrl,
+      email: 'bayu.setiawan@siswa.nexus.sch.id'
     }
   };
 
+  // Student profile records with explicit email relation
   const defaultProfiles = [
     {
       id: 'student-001',
       user_id: 'auth-user-student-001',
+      email: 'bayu.setiawan@siswa.nexus.sch.id',
       nama: 'Bayu Setiawan',
       nisn: '0054819231',
       nis: '21221045',
       jenis_kelamin: 'L',
       id_kelas: 'class-001',
       photo_url: STUDENT_PROFILE.avatarUrl,
+      created_at: new Date('2024-07-15').toISOString(),
+      updated_at: new Date().toISOString()
+    },
+    {
+      id: 'student-002',
+      user_id: 'google-user-khrisna',
+      email: 'khrisnatirtaendira@gmail.com',
+      nama: 'Khrisna Tirta Endira',
+      nisn: '0054819232',
+      nis: '21221046',
+      jenis_kelamin: 'L',
+      id_kelas: 'class-001',
+      photo_url: 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?auto=format&fit=crop&w=400&q=80',
       created_at: new Date('2024-07-15').toISOString(),
       updated_at: new Date().toISOString()
     }
@@ -161,11 +180,7 @@ function createMockSupabaseClient() {
   };
 
   const authSubscribers = new Set();
-  let currentSession = getStored('session', {
-    user: defaultUser,
-    access_token: 'mock-token-xyz',
-    expires_at: Math.floor(Date.now() / 1000) + 86400
-  });
+  let currentSession = getStored('session', null);
 
   const notifyAuth = (event, session) => {
     currentSession = session;
@@ -209,14 +224,103 @@ function createMockSupabaseClient() {
           }
         };
       },
+      /**
+       * Google OAuth via Supabase Authentication
+       */
+      async signInWithOAuth({ provider, options = {} }) {
+        if (provider !== 'google') {
+          return { data: null, error: { message: `Provider ${provider} tidak didukung, silakan gunakan Google OAuth.` } };
+        }
+
+        // Determine email from hint or default
+        const hintEmail = options?.queryParams?.login_hint || options?.email || 'bayu.setiawan@siswa.nexus.sch.id';
+        const cleanEmail = hintEmail.toLowerCase().trim();
+
+        // Check if there is an existing student profile matching this email
+        let studentProfile = tables.profiles_siswa.find(
+          (p) => (p.email || '').toLowerCase() === cleanEmail
+        );
+
+        const fullName = studentProfile?.nama || (
+          cleanEmail.startsWith('bayu')
+            ? 'Bayu Setiawan'
+            : cleanEmail.includes('khrisna')
+            ? 'Khrisna Tirta Endira'
+            : cleanEmail.split('@')[0].replace(/[._-]/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase())
+        );
+
+        const userId = studentProfile?.user_id || `google-user-${btoa(cleanEmail).replace(/[^a-zA-Z0-9]/g, '').slice(0, 12)}`;
+
+        const user = {
+          id: userId,
+          email: cleanEmail,
+          app_metadata: { provider: 'google', providers: ['google'] },
+          user_metadata: {
+            name: fullName,
+            full_name: fullName,
+            email: cleanEmail,
+            avatar_url: studentProfile?.photo_url || STUDENT_PROFILE.avatarUrl,
+            picture: studentProfile?.photo_url || STUDENT_PROFILE.avatarUrl,
+            email_verified: true
+          }
+        };
+
+        // If profile exists but user_id differed, link it
+        if (studentProfile) {
+          studentProfile.user_id = userId;
+          studentProfile.email = cleanEmail;
+          saveTable('profiles_siswa');
+        } else {
+          // Auto-provision student profile bound to this Google email
+          const newProfile = {
+            id: `student-${Date.now().toString(36)}`,
+            user_id: userId,
+            email: cleanEmail,
+            nama: fullName,
+            nisn: '00' + Math.floor(10000000 + Math.random() * 90000000),
+            nis: '2122' + Math.floor(1000 + Math.random() * 9000),
+            jenis_kelamin: 'L',
+            id_kelas: 'class-001',
+            photo_url: user.user_metadata.avatar_url,
+            created_at: new Date().toISOString(),
+            updated_at: new Date().toISOString()
+          };
+          tables.profiles_siswa.push(newProfile);
+          saveTable('profiles_siswa');
+        }
+
+        const session = {
+          user,
+          access_token: 'mock-google-oauth-token-' + Date.now(),
+          token_type: 'bearer',
+          expires_in: 3600,
+          expires_at: Math.floor(Date.now() / 1000) + 3600
+        };
+
+        notifyAuth('SIGNED_IN', session);
+
+        return {
+          data: {
+            provider: 'google',
+            url: options?.redirectTo || window.location.origin
+          },
+          error: null
+        };
+      },
       async signInWithPassword({ email, password }) {
         if (!email || !password) {
           return { data: null, error: { message: 'Email dan kata sandi wajib diisi' } };
         }
+        const cleanEmail = email.trim().toLowerCase();
+        const profile = tables.profiles_siswa.find((p) => (p.email || '').toLowerCase() === cleanEmail);
         const user = {
-          id: 'auth-user-student-001',
-          email: email.trim(),
-          user_metadata: { name: email.split('@')[0] }
+          id: profile?.user_id || 'auth-user-student-001',
+          email: cleanEmail,
+          user_metadata: {
+            name: profile?.nama || cleanEmail.split('@')[0],
+            full_name: profile?.nama || cleanEmail.split('@')[0],
+            email: cleanEmail
+          }
         };
         const session = {
           user,
@@ -227,10 +331,11 @@ function createMockSupabaseClient() {
         return { data: { user, session }, error: null };
       },
       async signUp({ email, password }) {
+        const cleanEmail = email.trim().toLowerCase();
         const user = {
           id: 'auth-user-' + Date.now(),
-          email: email.trim(),
-          user_metadata: { name: email.split('@')[0] }
+          email: cleanEmail,
+          user_metadata: { name: cleanEmail.split('@')[0], email: cleanEmail }
         };
         return { data: { user }, error: null };
       },
@@ -245,7 +350,18 @@ function createMockSupabaseClient() {
     rpc(fnName, params = {}) {
       if (fnName === 'verify_email_student_mapping') {
         const email = (params.p_email || '').toLowerCase().trim();
-        const profile = tables.profiles_siswa[0];
+        // Look up by email in profiles_siswa
+        let profile = tables.profiles_siswa.find(
+          (p) => (p.email || '').toLowerCase() === email
+        );
+
+        if (!profile && tables.profiles_siswa.length > 0) {
+          // If no exact match, bind/link with default or create
+          profile = tables.profiles_siswa[0];
+          profile.email = email;
+          saveTable('profiles_siswa');
+        }
+
         return Promise.resolve({
           data: {
             valid: true,
@@ -254,8 +370,8 @@ function createMockSupabaseClient() {
             student_name: profile.nama,
             nisn: profile.nisn,
             nis: profile.nis,
-            class_name: 'XII Rekayasa Perangkat Lunak 1',
-            email
+            email: profile.email || email,
+            class_name: 'XII Rekayasa Perangkat Lunak 1'
           },
           error: null
         });
@@ -298,7 +414,13 @@ function createMockSupabaseClient() {
         }
 
         eq(col, val) {
-          this.filters.push((r) => r[col] === val);
+          this.filters.push((r) => {
+            const rowVal = r[col];
+            if (typeof rowVal === 'string' && typeof val === 'string') {
+              return rowVal.toLowerCase() === val.toLowerCase();
+            }
+            return rowVal === val;
+          });
           return this;
         }
 
